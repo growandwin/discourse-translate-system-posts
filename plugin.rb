@@ -1,13 +1,3 @@
-# Na hoście, wyjdź z kontenera jeśli jesteś w środku
-exit
-
-# Utwórz katalog na pluginy lokalne
-mkdir -p /var/discourse/plugins/discourse-translate-bots
-
-# Utwórz plugin
-cat > /var/discourse/plugins/discourse-translate-bots/plugin.rb << 'PLUGINEOF'
-# frozen_string_literal: true
-
 # name: discourse-translate-bots
 # about: Enables AI translation for bot and system user posts (removes user_id > 0 restriction)
 # version: 0.2.0
