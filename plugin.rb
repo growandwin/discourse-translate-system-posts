@@ -2,7 +2,7 @@
 
 # name: discourse-translate-system-posts
 # about: Enables AI translation for bot and system user posts
-# version: 0.9.0
+# version: 1.0.0
 # authors: Jarek
 # url: https://github.com/growandwin/discourse-translate-system-posts
 
@@ -10,7 +10,7 @@ after_initialize do
   reloadable_patch do |plugin|
     # Patch PostCandidates - remove user_id > 0 restriction
     DiscourseAi::Translation::PostCandidates.class_eval do
-      private_class_method def self.get
+      def self.get
         posts =
           Post
             .where("posts.created_at > ?", SiteSetting.ai_translation_backfill_max_age_days.days.ago)
@@ -36,7 +36,7 @@ after_initialize do
 
     # Patch TopicCandidates - remove user_id > 0 restriction
     DiscourseAi::Translation::TopicCandidates.class_eval do
-      private_class_method def self.get
+      def self.get
         topics =
           Topic
             .where("topics.created_at > ?", SiteSetting.ai_translation_backfill_max_age_days.days.ago)
@@ -64,7 +64,6 @@ after_initialize do
       def get_localized_static_body(post)
         return nil unless SiteSetting.content_localization_enabled
         
-        # Get user locale from: current_user, Accept-Language header, or default
         user_locale = current_user&.locale
         user_locale ||= request.env['HTTP_ACCEPT_LANGUAGE']&.split(',')&.first&.split(';')&.first&.strip&.gsub('-', '_')
         user_locale ||= SiteSetting.default_locale
@@ -73,7 +72,6 @@ after_initialize do
         
         base_locale = user_locale.split("_").first
         
-        # Try exact match first, then base locale, then any matching base
         localization = PostLocalization.find_by(post_id: post.id, locale: user_locale)
         localization ||= PostLocalization.find_by(post_id: post.id, locale: base_locale)
         localization ||= PostLocalization.where(post_id: post.id).where("locale LIKE ?", "#{base_locale}%").first
@@ -132,7 +130,6 @@ after_initialize do
           title_prefix = I18n.exists?("js.#{page_name}") ? I18n.t("js.#{page_name}") : @topic.title
           @title = "#{title_prefix} - #{SiteSetting.title}"
           
-          # Use localized content if available
           post = @topic.posts.first
           @body = get_localized_static_body(post) || post.cooked
           
