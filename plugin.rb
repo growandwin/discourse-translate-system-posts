@@ -2,7 +2,7 @@
 
 # name: discourse-translate-system-posts
 # about: Enables AI translation for bot and system user posts
-# version: 0.8.0
+# version: 0.9.0
 # authors: Jarek
 # url: https://github.com/growandwin/discourse-translate-system-posts
 
@@ -59,39 +59,92 @@ after_initialize do
 
     # Patch StaticController - use localized content for /privacy, /tos, /faq
     StaticController.class_eval do
-      alias_method :original_show, :show
+      private
 
-      def show
-        map = StaticController::DEFAULT_PAGES.deep_merge(StaticController::CUSTOM_PAGES)
-        page = params[:id]
-        page = page.gsub(/[^a-z0-9\_\-]/, "")
-
-        if map.has_key?(page) && SiteSetting.content_localization_enabled
-          topic_id_setting = map[page][:topic_id]
-          if topic_id_setting
-            topic = Topic.find_by_id(SiteSetting.get(topic_id_setting))
-            if topic
-              post = topic.posts.first
-              user_locale = I18n.locale.to_s
-              
-              # Try exact match first, then base locale
-              localization = PostLocalization.find_by(post_id: post.id, locale: user_locale)
-              localization ||= PostLocalization.find_by(post_id: post.id, locale: user_locale.split("_").first)
-              localization ||= PostLocalization.where(post_id: post.id)
-                                .where("locale LIKE ?", "#{user_locale.split('_').first}%")
-                                .first
-
-              if localization
-                original_show
-                @body = localization.cooked if @body.present?
-                return
-              end
-            end
-          end
-        end
-
-        original_show
+      def get_localized_static_body(post)
+        return nil unless SiteSetting.content_localization_enabled
+        
+        # Get user locale from: current_user, Accept-Language header, or default
+        user_locale = current_user&.locale
+        user_locale ||= request.env['HTTP_ACCEPT_LANGUAGE']&.split(',')&.first&.split(';')&.first&.strip&.gsub('-', '_')
+        user_locale ||= SiteSetting.default_locale
+        
+        return nil if user_locale.blank?
+        
+        base_locale = user_locale.split("_").first
+        
+        # Try exact match first, then base locale, then any matching base
+        localization = PostLocalization.find_by(post_id: post.id, locale: user_locale)
+        localization ||= PostLocalization.find_by(post_id: post.id, locale: base_locale)
+        localization ||= PostLocalization.where(post_id: post.id).where("locale LIKE ?", "#{base_locale}%").first
+        
+        localization&.cooked
       end
     end
+
+    StaticController.prepend(Module.new do
+      def show
+        if params[:id] == "login"
+          destination = extract_redirect_param
+
+          if current_user
+            return redirect_to(path(destination), allow_other_host: false)
+          elsif destination != "/"
+            cookies[:destination_url] = path(destination)
+          end
+        elsif params[:id] == "signup" && current_user
+          return redirect_to path("/")
+        end
+
+        if SiteSetting.login_required? && current_user.nil? && %w[faq guidelines].include?(params[:id])
+          return redirect_to path("/login")
+        end
+
+        rename_faq = SiteSetting.experimental_rename_faq_to_guidelines
+
+        if rename_faq
+          redirect_paths = %w[/rules /conduct]
+          redirect_paths << "/faq" if SiteSetting.faq_url.blank?
+          return redirect_to(path("/guidelines")) if redirect_paths.include?(request.path)
+        end
+
+        map = StaticController::DEFAULT_PAGES.deep_merge(StaticController::CUSTOM_PAGES)
+        @page = params[:id]
+
+        if map.has_key?(@page)
+          site_setting_key = map[@page][:redirect]
+          url = SiteSetting.get(site_setting_key) if site_setting_key
+          return redirect_to(url, allow_other_host: true) if url.present?
+        end
+
+        @page = "faq" if @page == "guidelines"
+        @page = @page.gsub(/[^a-z0-9\_\-]/, "")
+
+        if map.has_key?(@page)
+          topic_id = map[@page][:topic_id]
+          topic_id = instance_exec(&topic_id) if topic_id.is_a?(Proc)
+
+          @topic = Topic.find_by_id(SiteSetting.get(topic_id))
+          raise Discourse::NotFound unless @topic
+
+          page_name = (@page == "faq") ? (rename_faq ? "guidelines" : "faq") : @page
+
+          title_prefix = I18n.exists?("js.#{page_name}") ? I18n.t("js.#{page_name}") : @topic.title
+          @title = "#{title_prefix} - #{SiteSetting.title}"
+          
+          # Use localized content if available
+          post = @topic.posts.first
+          @body = get_localized_static_body(post) || post.cooked
+          
+          @faq_overridden = SiteSetting.faq_url.present?
+          @experimental_rename_faq_to_guidelines = rename_faq
+
+          render :show, layout: !request.xhr?, formats: [:html]
+          return
+        end
+
+        super
+      end
+    end)
   end
 end
